@@ -56,20 +56,6 @@
             </div>
             <div id="statusMessage" class="status-message"></div>
         </div>
-
-
-
-
-
-        <div class="output-section">
-            <h3 style="margin-bottom: 10px;">Rectangle Coordinates (JSON)</h3>
-            <textarea id="output" readonly></textarea>
-        </div>
-
-
-
-
-
     </div>
 
     <script>
@@ -78,7 +64,6 @@
         const canvas = document.getElementById('canvas');
         const ctx = canvas.getContext('2d');
         const timeline = document.getElementById('timeline');
-        const output = document.getElementById('output');
         const clearBtn = document.getElementById('clearBtn');
         const processBtn = document.getElementById('processBtn');
         const videoContainer = document.getElementById('videoContainer');
@@ -106,7 +91,6 @@
                 videoContainer.style.display = 'inline-block';
                 controls.style.display = 'block';
                 rectangles = [];
-                updateOutput();
                 hideStatus();
             }
         });
@@ -180,7 +164,6 @@
             // Only add if rectangle has area
             if (normalizedRect.w > 5 && normalizedRect.h > 5) {
                 rectangles.push(normalizedRect);
-                updateOutput();
             }
 
             currentRect = null;
@@ -199,15 +182,10 @@
             });
         }
 
-        // Update JSON output
-        function updateOutput() {
-            output.value = JSON.stringify(rectangles, null, 2);
-        }
 
         // Clear all rectangles
         clearBtn.addEventListener('click', () => {
             rectangles = [];
-            updateOutput();
             drawRectangles();
         });
 
@@ -249,12 +227,7 @@
                 const { job_id, status_url } = await response.json();
                 pollStatus(status_url);
 
-                // If the API returns a download URL or processed video
-<!--                if (result.output_url) {-->
-<!--                    showStatus(`Success! <a href="${result.output_url}" download="${result.filename}" style="color: #fff; text-decoration: underline; font-weight: bold;">Download processed video</a>`, 'success');-->
-<!--                } else {-->
-<!--                    showStatus('Video processed successfully! ' + (result.message || ''), 'success');-->
-<!--                }-->
+
 
             } catch (error) {
                 console.error('Error:', error);
