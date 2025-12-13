@@ -1,0 +1,19 @@
+# web server
+flask
+flask-cors
+
+# Real-ESRGAN and dependencies
+realesrgan
+basicsr
+facexlib
+gfpgan
+
+# If not already present:
+opencv-python
+numpy
+torch
+torchvision
+Pillow
+
+# Simple LAMA inpainting
+simple-lama-inpainting

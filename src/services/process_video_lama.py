@@ -5,8 +5,8 @@ Uses FFmpeg for frame extraction and re-encoding
 GPU-accelerated for M-series Macs
 
 Supports two modes:
-  - Single video mode: process_video_lama.py <input> <output> <ffmpeg> <regions>
-  - Batch mode: process_video_lama.py --batch <ffmpeg>
+  - Single video mode: process_video_lama.py <input> <output>  <regions>
+  - Batch mode: process_video_lama.py --batch
     (reads video requests from stdin, one per line: "input|output|regions")
 """
 
@@ -142,10 +142,10 @@ def run_monitored_subprocess(cmd):
     return stdout, stderr
 
 
-def extract_frames(video_path, output_dir, ffmpeg_path):
+def extract_frames(video_path, output_dir):
     """Extract frames from video using FFmpeg"""
     cmd = [
-        ffmpeg_path,
+        'ffmpeg',
         '-i', video_path,
         '-qscale:v', '2',  # High quality
         f'{output_dir}/frame_%06d.png'
@@ -187,7 +187,7 @@ def remove_watermark_lama(simple_lama, frame_path, output_path, regions):
     # Save result
     cv2.imwrite(output_path, result)
 
-def process_frames(simple_lama, frames_dir, output_dir, regions):
+def process_frames(simple_lama, frames_dir, output_dir, regions, progress_cb=None):
     """Process all frames and remove watermarks using AI"""
     raise_if_cancelled()
     frame_files = sorted([f for f in os.listdir(frames_dir) if f.endswith('.png')])
@@ -203,6 +203,8 @@ def process_frames(simple_lama, frames_dir, output_dir, regions):
 
         # Progress feedback - update every frame for real-time progress
         print(f"Processed {i + 1}/{total_frames} frames", file=sys.stderr, flush=True)
+        if progress_cb:
+            progress_cb(int(i / total_frames * 100))
 
         test_sleep = os.environ.get("LAMA_TEST_SLEEP_PER_FRAME")
         if test_sleep:
@@ -211,11 +213,11 @@ def process_frames(simple_lama, frames_dir, output_dir, regions):
 
         raise_if_cancelled()
 
-def encode_video(frames_dir, output_path, fps, ffmpeg_path, original_video):
+def encode_video(frames_dir, output_path, fps, original_video):
     """Encode processed frames back to video using FFmpeg with original audio"""
     raise_if_cancelled()
     cmd = [
-        ffmpeg_path,
+        'ffmpeg',
         '-r', str(fps),
         '-i', f'{frames_dir}/frame_%06d.png',
         '-i', original_video,  # Add original video as second input for audio
@@ -249,7 +251,14 @@ def parse_regions(regions_json):
         print(f"Error: Invalid JSON format for regions: {e}", file=sys.stderr, flush=True)
         raise
 
-def process_single_video(simple_lama, input_video, output_video, ffmpeg_path, regions, video_name=None):
+def process_single_video(
+        simple_lama,
+        input_video,
+        output_video,
+        regions,
+        video_name=None,
+        progress_cb=None
+    ):
     """
     Process a single video with LaMa AI inpainting.
 
@@ -257,7 +266,6 @@ def process_single_video(simple_lama, input_video, output_video, ffmpeg_path, re
         simple_lama: Loaded LaMa model instance
         input_video: Path to input video file
         output_video: Path to output video file
-        ffmpeg_path: Path to FFmpeg executable
         regions: List of watermark regions to remove
         video_name: Optional video name for progress messages (defaults to input filename)
 
@@ -279,17 +287,17 @@ def process_single_video(simple_lama, input_video, output_video, ffmpeg_path, re
 
         # Phase 1: Extract frames
         print(f"PHASE|EXTRACTING_FRAMES|{video_name}", file=sys.stderr, flush=True)
-        extract_frames(input_video, frames_dir, ffmpeg_path)
+        extract_frames(input_video, frames_dir)
         raise_if_cancelled()
 
         # Phase 2: Process frames with AI
         print(f"PHASE|PROCESSING_FRAMES|{video_name}", file=sys.stderr, flush=True)
-        process_frames(simple_lama, frames_dir, processed_dir, regions)
+        process_frames(simple_lama, frames_dir, processed_dir, regions, progress_cb)
         raise_if_cancelled()
 
         # Phase 3: Encode video
         print(f"PHASE|ENCODING_VIDEO|{video_name}", file=sys.stderr, flush=True)
-        encode_video(processed_dir, output_video, fps, ffmpeg_path, input_video)
+        encode_video(processed_dir, output_video, fps, input_video)
 
     except CancellationError:
         # Best-effort cleanup of any partially written output
@@ -304,62 +312,97 @@ def process_single_video(simple_lama, input_video, output_video, ffmpeg_path, re
         except Exception as cleanup_error:
             print(f"Warning: Failed to cleanup temp directory {temp_dir}: {cleanup_error}", file=sys.stderr, flush=True)
 
-def load_model():
-    """
-    Load LaMa model with bundled model path detection.
-    Returns SimpleLama instance ready for processing.
-    """
-    if os.environ.get("LAMA_SKIP_MODEL_LOAD") == "1":
-        print("Test mode: skipping LaMa model load", file=sys.stderr, flush=True)
+# def load_model():
+#     """
+#     Load LaMa model with bundled model path detection.
+#     Returns SimpleLama instance ready for processing.
+#     """
+#     if os.environ.get("LAMA_SKIP_MODEL_LOAD") == "1":
+#         print("Test mode: skipping LaMa model load", file=sys.stderr, flush=True)
+#
+#         class NoOpLama:
+#             def __call__(self, image, mask):
+#                 return image
+#
+#         return NoOpLama()
+#
+#     # Use bundled model if running from PyInstaller bundle
+#     if getattr(sys, 'frozen', False):
+#         bundle_dir = sys._MEIPASS
+#         model_path = os.path.join(bundle_dir, 'big-lama.pt')
+#         if os.path.exists(model_path):
+#             os.environ['LAMA_MODEL'] = model_path
+#             print(f"Using bundled LaMa model (offline mode): {model_path}", file=sys.stderr, flush=True)
+#         else:
+#             print("Warning: Bundled model not found, will download from PyTorch Hub (~196MB)", file=sys.stderr, flush=True)
+#     else:
+#         print("Running in development mode, will use cached model or download if needed", file=sys.stderr, flush=True)
+#
+# #    script_dir = os.path.dirname(os.path.abspath(__file__))
+# #    local_model = os.path.join(script_dir, 'big-lama.pt')
+# #    if os.path.exists(local_model):
+# #        os.environ['LAMA_MODEL'] = local_model
+# #        print(f"Using local LaMa model: {local_model}", file=sys.stderr, flush=True)
+# #    else:
+# #        print("Local model not found, will download from PyTorch Hub (~196MB)", file=sys.stderr, flush=True)
+# #
+#
+# #    device = "cpu"
+# #    print("Loading LaMa AI model (CPU mode)...", file=sys.stderr, flush=True)
+#
+#     # Auto-detect best device for processing
+#     if torch.backends.mps.is_available():
+#         device = "mps"
+#         print("Loading LaMa AI model with GPU acceleration (Metal)...", file=sys.stderr, flush=True)
+#     elif torch.cuda.is_available():
+#         device = "cuda"
+#         print("Loading LaMa AI model with GPU acceleration (CUDA)...", file=sys.stderr, flush=True)
+#     else:
+#         device = "cpu"
+#         torch.set_default_device("cpu")
+#         print("Loading LaMa AI model (CPU mode - will be slower)...", file=sys.stderr, flush=True)
+#
+#     print("PHASE|MODEL_LOADING", file=sys.stderr, flush=True)
+#     simple_lama = SimpleLama(device=device)
+#     print("PHASE|MODEL_READY", file=sys.stderr, flush=True)
+#
+#     return simple_lama
 
+def load_model():
+    if os.environ.get("LAMA_SKIP_MODEL_LOAD") == "1":
         class NoOpLama:
             def __call__(self, image, mask):
                 return image
-
         return NoOpLama()
 
-    # Use bundled model if running from PyInstaller bundle
-    if getattr(sys, 'frozen', False):
-        bundle_dir = sys._MEIPASS
-        model_path = os.path.join(bundle_dir, 'big-lama.pt')
-        if os.path.exists(model_path):
-            os.environ['LAMA_MODEL'] = model_path
-            print(f"Using bundled LaMa model (offline mode): {model_path}", file=sys.stderr, flush=True)
-        else:
-            print("Warning: Bundled model not found, will download from PyTorch Hub (~196MB)", file=sys.stderr, flush=True)
-    else:
-        print("Running in development mode, will use cached model or download if needed", file=sys.stderr, flush=True)
 
-#    script_dir = os.path.dirname(os.path.abspath(__file__))
-#    local_model = os.path.join(script_dir, 'big-lama.pt')
-#    if os.path.exists(local_model):
-#        os.environ['LAMA_MODEL'] = local_model
-#        print(f"Using local LaMa model: {local_model}", file=sys.stderr, flush=True)
-#    else:
-#        print("Local model not found, will download from PyTorch Hub (~196MB)", file=sys.stderr, flush=True)
-#        
-        
-#    device = "cpu"
-#    print("Loading LaMa AI model (CPU mode)...", file=sys.stderr, flush=True)
+    # HARD disable CUDA
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    torch.set_default_device("cpu")
 
-    # Auto-detect best device for processing
-    if torch.backends.mps.is_available():
-        device = "mps"
-        print("Loading LaMa AI model with GPU acceleration (Metal)...", file=sys.stderr, flush=True)
-    elif torch.cuda.is_available():
-        device = "cuda"
-        print("Loading LaMa AI model with GPU acceleration (CUDA)...", file=sys.stderr, flush=True)
-    else:
-        device = "cpu"
-        print("Loading LaMa AI model (CPU mode - will be slower)...", file=sys.stderr, flush=True)
+    # Force TorchScript CPU load
+    _orig_load = torch.jit.load
+    def _load_cpu(*args, **kwargs):
+        kwargs["map_location"] = "cpu"
+        return _orig_load(*args, **kwargs)
+    torch.jit.load = _load_cpu
 
+    print("Loading LaMa AI model (CPU-only)...", file=sys.stderr, flush=True)
     print("PHASE|MODEL_LOADING", file=sys.stderr, flush=True)
-    simple_lama = SimpleLama(device=device)
-    print("PHASE|MODEL_READY", file=sys.stderr, flush=True)
 
+    simple_lama = SimpleLama(device="cpu")
+
+    print("PHASE|MODEL_READY", file=sys.stderr, flush=True)
     return simple_lama
 
-def batch_mode(ffmpeg_path):
+
+
+
+
+
+
+
+def batch_mode():
     """
     Batch processing mode: load model once, process multiple videos from stdin.
 
@@ -416,7 +459,7 @@ def batch_mode(ffmpeg_path):
 
                 # Process video (this will print progress updates)
                 video_name = os.path.basename(input_video)
-                process_single_video(simple_lama, input_video, output_video, ffmpeg_path, regions, video_name)
+                process_single_video(simple_lama, input_video, output_video, regions, video_name)
 
                 if CANCELLED:
                     break
@@ -457,32 +500,21 @@ def batch_mode(ffmpeg_path):
 def single_video_mode():
     """
     Single video processing mode (backward compatible).
-    Usage: process_video_lama.py <input_video> <output_video> <ffmpeg_path> <regions_json>
+    Usage: process_video_lama.py <input_video> <output_video> <regions_json>
     """
     global MODE
     MODE = "single"
 
-#    if len(sys.argv) != 5:
-#        print("Usage: process_video_lama.py <input_video> <output_video> <ffmpeg_path> <regions_json>", file=sys.stderr)
-#        print("   or: process_video_lama.py --batch <ffmpeg_path>", file=sys.stderr)
-#        sys.exit(1)
-#
-#    input_video = sys.argv[1]
-#    output_video = sys.argv[2]
-#    ffmpeg_path = sys.argv[3]
-#    regions_json = sys.argv[4]
     if len(sys.argv) != 3:
         print("Usage: process_video_lama.py <input_video> <regions_json>", file=sys.stderr)
-        print("  or: process_video_lama.py --batch <ffmpeg_path>", file=sys.stderr)
+        print("  or: process_video_lama.py --batch ", file=sys.stderr)
         # Note: The original batch mode signature is slightly inconsistent with the new
         # single mode, but I kept the batch mode message as you provided it.
         sys.exit(1)
 
     input_video = sys.argv[1]
     regions_json = sys.argv[2]
-    
-    # 1. Automatically assign ffmpeg_path
-    ffmpeg_path = "./ffmpeg"
+
     
     # 2. Automatically generate the output_video filename
     # Split the filename into base and extension (e.g., 'video.mp4' -> ('video', '.mp4'))
@@ -507,7 +539,7 @@ def single_video_mode():
         simple_lama = load_model()
 
         # Process video
-        process_single_video(simple_lama, input_video, output_video, ffmpeg_path, regions)
+        process_single_video(simple_lama, input_video, output_video, regions)
 
         if CANCELLED:
             return
@@ -530,10 +562,9 @@ def main():
     # Check for batch mode flag
     if len(sys.argv) >= 2 and sys.argv[1] == '--batch':
         if len(sys.argv) != 3:
-            print("Usage: process_video_lama.py --batch <ffmpeg_path>", file=sys.stderr)
+            print("Usage: process_video_lama.py --batch ", file=sys.stderr)
             sys.exit(1)
-        ffmpeg_path = sys.argv[2]
-        batch_mode(ffmpeg_path)
+        batch_mode()
     else:
         single_video_mode()
 

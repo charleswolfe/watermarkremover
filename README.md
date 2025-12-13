@@ -1,4 +1,19 @@
 Install
+
+
+# mac:
+install docker: `brew install docker docker-compose`
+`brew install docker-credential-helper`
+
+# Build the docker image
+`docker build -f Dockerfile -t watermarkremover .`
+`docker run -p 0.0.0.0:5000:5000  watermarkremover`
+should be able to see page on http://localhost:5000/
+
+
+------------------------------------------
+delete me
+
 # 1. Create a virtual environment
 python3 -m venv venv
 

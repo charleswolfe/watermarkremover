@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Watermark Remover and enhancer</title>
+    <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+    <div class="container">
+        <h1>Watermark Remover and Enhancer</h1>
+
+        <div class="instructions">
+            <strong>Instructions:</strong>
+            <ul>
+                <li>Upload a video file</li>
+                <li>Use the timeline to scrub through the video</li>
+                <li>Click and drag on the video to draw rectangles around areas to process</li>
+                <li>Click "Process Video" to upload and submit to the API</li>
+            </ul>
+        </div>
+
+        <div class="api-config">
+            <div style="margin-top: 15px; display: flex; gap: 20px;">
+                <label style="display: flex; align-items: center; cursor: pointer;">
+                    <input type="checkbox" id="upscaleToggle" checked style="width: auto; margin-right: 8px; cursor: pointer;">
+                    <span>Enhance/Upscale Video</span>
+                </label>
+
+                <label style="display: flex; align-items: center; cursor: pointer;">
+                    <input type="checkbox" id="useCpuToggle" checked style="width: auto; margin-right: 8px; cursor: pointer;">
+                    <span>Use CPU (slower, no GPU required)</span>
+                </label>
+            </div>
+        </div>
+
+        <div class="upload-section">
+            <input type="file" id="videoUpload" accept="video/*">
+        </div>
+
+        <div class="video-container" id="videoContainer" style="display: none;">
+            <video id="video" controls></video>
+            <canvas id="canvas"></canvas>
+        </div>
+
+        <div class="controls" id="controls" style="display: none;">
+            <div class="timeline">
+                <input type="range" id="timeline" min="0" max="100" value="0" step="0.1">
+                <div class="time-display">
+                    <span id="currentTime">0:00</span> / <span id="duration">0:00</span>
+                </div>
+            </div>
+            <div class="buttons">
+                <button id="clearBtn" class="danger">Clear All Rectangles</button>
+                <button id="processBtn" class="success">Process Video</button>
+            </div>
+            <div id="statusMessage" class="status-message"></div>
+        </div>
+
+
+
+
+
+        <div class="output-section">
+            <h3 style="margin-bottom: 10px;">Rectangle Coordinates (JSON)</h3>
+            <textarea id="output" readonly></textarea>
+        </div>
+
+
+
+
+
+    </div>
+
+    <script>
+        const videoUpload = document.getElementById('videoUpload');
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const timeline = document.getElementById('timeline');
+        const output = document.getElementById('output');
+        const clearBtn = document.getElementById('clearBtn');
+        const processBtn = document.getElementById('processBtn');
+        const videoContainer = document.getElementById('videoContainer');
+        const controls = document.getElementById('controls');
+        const currentTimeDisplay = document.getElementById('currentTime');
+        const durationDisplay = document.getElementById('duration');
+        const apiUrl = "/process";
+        const statusMessage = document.getElementById('statusMessage');
+        const upscaleToggle = document.getElementById('upscaleToggle');
+        const useCpuToggle = document.getElementById('useCpuToggle');
+
+        let rectangles = [];
+        let isDrawing = false;
+        let startX, startY;
+        let currentRect = null;
+        let uploadedFile = null;
+
+        // Handle video upload
+        videoUpload.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                uploadedFile = file;
+                const url = URL.createObjectURL(file);
+                video.src = url;
+                videoContainer.style.display = 'inline-block';
+                controls.style.display = 'block';
+                rectangles = [];
+                updateOutput();
+                hideStatus();
+            }
+        });
+
+        // Setup canvas when video loads
+        video.addEventListener('loadedmetadata', () => {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            timeline.max = video.duration;
+            durationDisplay.textContent = formatTime(video.duration);
+            drawRectangles();
+        });
+
+        // Timeline scrubbing
+        timeline.addEventListener('input', (e) => {
+            video.currentTime = e.target.value;
+        });
+
+        // Update timeline as video plays
+        video.addEventListener('timeupdate', () => {
+            timeline.value = video.currentTime;
+            currentTimeDisplay.textContent = formatTime(video.currentTime);
+        });
+
+        // Mouse events for drawing rectangles
+        canvas.addEventListener('mousedown', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+
+            startX = (e.clientX - rect.left) * scaleX;
+            startY = (e.clientY - rect.top) * scaleY;
+            isDrawing = true;
+            currentRect = { x: startX, y: startY, w: 0, h: 0 };
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            if (!isDrawing) return;
+
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+
+            const currentX = (e.clientX - rect.left) * scaleX;
+            const currentY = (e.clientY - rect.top) * scaleY;
+
+            currentRect.w = currentX - startX;
+            currentRect.h = currentY - startY;
+
+            drawRectangles();
+
+            // Draw current rectangle being drawn
+            ctx.strokeStyle = '#4a90e2';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(currentRect.x, currentRect.y, currentRect.w, currentRect.h);
+        });
+
+        canvas.addEventListener('mouseup', (e) => {
+            if (!isDrawing) return;
+
+            isDrawing = false;
+
+            // Normalize rectangle (handle negative width/height)
+            const normalizedRect = {
+                x: Math.round(currentRect.w < 0 ? currentRect.x + currentRect.w : currentRect.x),
+                y: Math.round(currentRect.h < 0 ? currentRect.y + currentRect.h : currentRect.y),
+                w: Math.round(Math.abs(currentRect.w)),
+                h: Math.round(Math.abs(currentRect.h))
+            };
+
+            // Only add if rectangle has area
+            if (normalizedRect.w > 5 && normalizedRect.h > 5) {
+                rectangles.push(normalizedRect);
+                updateOutput();
+            }
+
+            currentRect = null;
+            drawRectangles();
+        });
+
+        // Draw all rectangles
+        function drawRectangles() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            ctx.strokeStyle = '#4a90e2';
+            ctx.lineWidth = 2;
+
+            rectangles.forEach(rect => {
+                ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
+            });
+        }
+
+        // Update JSON output
+        function updateOutput() {
+            output.value = JSON.stringify(rectangles, null, 2);
+        }
+
+        // Clear all rectangles
+        clearBtn.addEventListener('click', () => {
+            rectangles = [];
+            updateOutput();
+            drawRectangles();
+        });
+
+        // Process video - upload and submit
+        processBtn.addEventListener('click', async () => {
+            if (!uploadedFile) {
+                showStatus('Please upload a video first', 'error');
+                return;
+            }
+
+            if (rectangles.length === 0) {
+                showStatus('Please draw at least one rectangle', 'error');
+                return;
+            }
+
+            processBtn.disabled = true;
+            processBtn.textContent = 'Processing...';
+            showStatus('Uploading video and processing...', 'info');
+
+            try {
+                const formData = new FormData();
+                formData.append('video', uploadedFile);
+                formData.append('rectangles', JSON.stringify(rectangles));
+                formData.append('upscale', upscaleToggle.checked ? 'true' : 'false');
+                formData.append('use_cpu', useCpuToggle.checked ? 'true' : 'false');
+
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    body: formData
+                });
+
+
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`HTTP ${response.status}: ${errorText}`);
+                }
+
+                //const result = await response.json();
+                const { job_id, status_url } = await response.json();
+                pollStatus(status_url);
+
+                // If the API returns a download URL or processed video
+<!--                if (result.output_url) {-->
+<!--                    showStatus(`Success! <a href="${result.output_url}" download="${result.filename}" style="color: #fff; text-decoration: underline; font-weight: bold;">Download processed video</a>`, 'success');-->
+<!--                } else {-->
+<!--                    showStatus('Video processed successfully! ' + (result.message || ''), 'success');-->
+<!--                }-->
+
+            } catch (error) {
+                console.error('Error:', error);
+                showStatus('Error: ' + error.message, 'error');
+            } finally {
+                processBtn.disabled = false;
+                processBtn.textContent = 'Process Video';
+            }
+        });
+
+        async function pollStatus(statusUrl) {
+            const interval = setInterval(async () => {
+                const res = await fetch(statusUrl);
+                const data = await res.json();
+
+                if (data.status === "processing") {
+                    showStatus(`Processing… ${data.progress || 0}%`, 'info');
+                }
+
+                if (data.status === "completed") {
+                    clearInterval(interval);
+                    showStatus(
+                        `Success! <a href="${data.output_url}" download style="color:#fff;font-weight:bold">Download video</a>`,
+                        'success'
+                    );
+                }
+
+                if (data.status === "failed") {
+                    clearInterval(interval);
+                    showStatus(`Failed: ${data.error}`, 'error');
+                }
+            }, 5000); // every 5s
+        }
+
+
+        // Status message helpers
+        function showStatus(message, type) {
+            statusMessage.innerHTML = message;
+            statusMessage.className = 'status-message ' + type;
+            statusMessage.style.display = 'block';
+        }
+
+        function hideStatus() {
+            statusMessage.style.display = 'none';
+        }
+
+        // Format time helper
+        function formatTime(seconds) {
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.floor(seconds % 60);
+            return `${mins}:${secs.toString().padStart(2, '0')}`;
+        }
+    </script>
+</body>
+</html>
